@@ -27,8 +27,6 @@
 #include <iostream>
 #include <sstream>
 
-using namespace std;
-
 void process_image(std::string arg, int i, dlib::shape_predictor& sp)
 {
   dlib::frontal_face_detector detector = dlib::get_frontal_face_detector();
@@ -50,15 +48,20 @@ void process_image(std::string arg, int i, dlib::shape_predictor& sp)
   }
 
   float angle = 0.0f;
+  dlib::point center;
   for (auto const& shape: shapes)
   {
-    for (size_t k = 0; k < shape.num_parts(); ++k)
+    // draw markers
+    if (false)
     {
-      auto pnt = shape.part(k);
-      dlib::fill_rect(img,
-                      dlib::rectangle(pnt.x() - 2, pnt.y() - 2,
-                                      pnt.x() + 2, pnt.y() + 2),
-                      dlib::rgb_pixel(255, 255, k));
+      for (size_t k = 0; k < shape.num_parts(); ++k)
+      {
+        auto pnt = shape.part(k);
+        dlib::fill_rect(img,
+                        dlib::rectangle(pnt.x() - 2, pnt.y() - 2,
+                                        pnt.x() + 2, pnt.y() + 2),
+                        dlib::rgb_pixel(255, 255, k));
+      }
     }
 
     auto left_eye = dlib::point((shape.part(37) +
@@ -71,6 +74,7 @@ void process_image(std::string arg, int i, dlib::shape_predictor& sp)
                                   shape.part(47) +
                                   shape.part(46)) * 0.25);
 
+    center = (right_eye + left_eye) * 0.5f;
     auto angle_line = (right_eye - left_eye);
     angle = atan2(angle_line.y(), angle_line.x());
   }
@@ -79,17 +83,35 @@ void process_image(std::string arg, int i, dlib::shape_predictor& sp)
   //dlib::array<dlib::array2d<dlib::rgb_pixel> > chips;
   //dlib::extract_image_chips(img, dlib::get_face_chip_details(shapes), chips, 512);
 
-  std::vector<dlib::chip_details> det_chip(dets.begin(), dets.end());
+  std::vector<dlib::chip_details> det_chip;
+
+  //for(auto const& det: dets)
+  for(auto const& shape : shapes)
+  {
+    //det_chip.push_back(dlib::grow_rect(det, det.width()));
+    auto rect = dlib::centered_rect(center.x(), center.y(),
+                                    shape.get_rect().width(),
+                                    shape.get_rect().height());
+    //auto rect = dlib::grow_rect(shape.get_rect(), shape.get_rect().width() / 2);
+    rect = dlib::grow_rect(rect, rect.width() / 2);
+    det_chip.emplace_back(rect, 512 * 512, angle);
+  }
+
   dlib::array<dlib::array2d<dlib::rgb_pixel> > chips;
   dlib::extract_image_chips(img, det_chip, chips);
 
   for (auto const& chip: chips)
   {
-    dlib::array2d<dlib::rgb_pixel> out;
-    auto transform = dlib::rotate_image(chip, out, angle);
+    //dlib::array2d<dlib::rgb_pixel> out;
+    //auto transform = dlib::rotate_image(chip, out, angle);
+
+    // dlib::array<dlib::array2d<dlib::rgb_pixel> > crop_image;
+    // dlib::array<dlib::chip_details> > crop_rects;
+    // crop_rects
+    // dlib::extract_image_chips(img, crop_rects, crop_image);
 
     std::string outfile = fmt::format("/tmp/out/chip{:08}.jpg", i);
-    dlib::save_jpeg(out, outfile);
+    dlib::save_jpeg(chip, outfile);
   }
 
 }
@@ -115,35 +137,45 @@ int main(int argc, char** argv)
       filenames.emplace(argv[i]);
     }
 
+    dlib::shape_predictor parent_sp;
+    dlib::deserialize(argv[1]) >> parent_sp;
+
     std::cout << "launching threads" << std::endl;
     std::vector<std::thread> threads;
     for(unsigned int i = 0; i < std::thread::hardware_concurrency(); ++i)
     {
       std::thread thread(
-        [&argv, &filenames, &filenames_mutex]
+        [&filenames, &filenames_mutex, &parent_sp]
         {
-          dlib::shape_predictor sp;
-          dlib::deserialize(argv[1]) >> sp;
-
-          while(true)
+          try
           {
-            int count = 0;
-            std::string filename;
-            {
-              std::lock_guard<std::mutex> lock(filenames_mutex);
-              if (filenames.empty())
-              {
-                return;
-              }
-              else
-              {
-                count = filenames.size();
-                filename = filenames.front();
-                filenames.pop();
-              }
-            }
+            dlib::shape_predictor sp = parent_sp;
 
-            process_image(filename, count, sp);
+            while(true)
+            {
+              int count = 0;
+              std::string filename;
+              {
+                std::lock_guard<std::mutex> lock(filenames_mutex);
+                if (filenames.empty())
+                {
+                  return;
+                }
+                else
+                {
+                  count = filenames.size();
+                  filename = filenames.front();
+                  filenames.pop();
+                }
+              }
+
+              process_image(filename, count, sp);
+            }
+          }
+          catch (std::exception const& e)
+          {
+            std::cout << "\nexception thrown!" << std::endl;
+            std::cout << e.what() << std::endl;
           }
         });
 
@@ -156,7 +188,7 @@ int main(int argc, char** argv)
       thread.join();
     }
   }
-  catch (exception const& e)
+  catch (std::exception const& e)
   {
     std::cout << "\nexception thrown!" << std::endl;
     std::cout << e.what() << std::endl;
